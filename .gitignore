@@ -1,0 +1,9 @@
+*.o
+*.d
+*.elf
+*.velf
+*.skprx
+companion/*.vpk
+companion/eboot.bin
+companion/param.sfo
+builds/

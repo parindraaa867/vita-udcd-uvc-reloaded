@@ -14,11 +14,9 @@ controller directly performs a DMA transfer from the physical address of the res
 
 ## Supported formats and resolutions
 
-* 960x544 @ 30 FPS and (less than) 60 FPS
+* 960x544 @ 30 FPS and (less than) 60 FPS — native, 1:1, sharpest
 * 896x504 @ 30 FPS and (almost) 60 FPS
 * 864x488 @ 30 FPS and 60 FPS
-* 480x272 @ 30 FPS and 60 FPS
-* 1280x720 @ 30 FPS
 
 ## Download and installation
 
@@ -39,6 +37,27 @@ controller directly performs a DMA transfer from the physical address of the res
 ur0:tai/udcd_uvc.skprx
 ```
 3. Reboot your PSVita.
+
+The build is **universal**: the same `udcd_uvc.skprx` auto-detects OLED (PCH-1000)
+and LCD (PCH-2000) models, so there's no longer a separate file per model.
+
+## Features / configuration
+
+This fork adds:
+
+* **Screen-off while capturing** — the Vita screen blanks when a host (e.g. OBS)
+  starts capturing and comes back when it stops or you unplug. It is debounced,
+  so changing resolution/FPS in OBS no longer makes it flicker.
+* **Manual screen toggle** — hold **SELECT + UP** while capturing to flip the
+  screen on/off by hand.
+* **Keep-awake** — the console won't auto-suspend while capturing.
+* **LED feedback** — the PS-button LED blips twice when a host starts capturing.
+* **Config file** — drop a `udcd_uvc.txt` at `ux0:/data/` or `ur0:/tai/` to set
+  the default resolution/FPS, screen-off behaviour, keep-awake, and boot delay
+  without recompiling. See the bundled `udcd_uvc.txt` for the keys.
+
+A single-buffer fallback build (`udcd_uvc_singlebuf.skprx`) is also provided in
+case the double allocation can't be satisfied on a given unit.
 
 ## Troubleshooting
 

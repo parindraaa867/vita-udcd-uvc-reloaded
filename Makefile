@@ -3,27 +3,34 @@ OBJS	= src/main.o
 LIBS	= -lSceSysmemForDriver_stub -lSceThreadmgrForDriver_stub \
 	-lSceCpuForDriver_stub -lSceUdcdForDriver_stub \
 	-lSceDisplayForDriver_stub -lSceIftuForDriver_stub \
-	-ltaihenForKernel_stub
+	-lSceCtrlForDriver_stub \
+	-lSceKernelSuspendForDriver_stub -lSceModulemgrForDriver_stub \
+	-lSceIofilemgrForDriver_stub \
+	-lSceOledForDriver_stub_weak -lSceLcdForDriver_stub_weak \
+	-ltaihenForKernel_stub -lSceSysclibForDriver_stub
+
+# OLED (PCH-1000) and LCD (PCH-2000) display libs are linked via *weak* stubs,
+# so the single binary loads on every model and picks the right one at runtime.
 
 ifeq ($(DEBUG), 1)
 	OBJS	+= debug/log.o debug/draw.o debug/console.o debug/font_data.o
 	CFLAGS	+= -DDEBUG -Idebug
-	LIBS	+= -lSceSysclibForDriver_stub -lSceIofilemgrForDriver_stub
 endif
 
-ifeq ($(DISPLAY_OFF_OLED), 1)
-	CFLAGS	+= -DDISPLAY_OFF_OLED
-	LIBS	+= -lSceOledForDriver_stub
+# Parallel convert/send with double-buffering (default on). Set PARALLEL=0 to
+# fall back to a single buffer (halves the framebuffer memory).
+ifeq ($(PARALLEL), 0)
+	CFLAGS	+= -DENCODE_SEND_PARALLELIZE=0
 endif
 
-ifeq ($(DISPLAY_OFF_LCD), 1)
-	CFLAGS	+= -DDISPLAY_OFF_LCD
-	LIBS	+= -lSceLcdForDriver_stub
+# Allocate the frame buffer from CDRAM instead of (phycont) main RAM.
+ifeq ($(USE_CDRAM), 1)
+	CFLAGS	+= -DUSE_CDRAM
 endif
 
 PREFIX	= arm-vita-eabi
 CC	= $(PREFIX)-gcc
-CFLAGS	+= -Wl,-q -Wall -O2 -nostartfiles -mcpu=cortex-a9 -mthumb-interwork -Iinclude
+CFLAGS	+= -Wl,-q -Wall -O3 -fomit-frame-pointer -nostartfiles -mcpu=cortex-a9 -mthumb-interwork -Iinclude
 DEPS	= $(OBJS:.o=.d)
 
 all: $(TARGET).skprx
