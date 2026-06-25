@@ -30,13 +30,16 @@ controller directly performs a DMA transfer from the physical address of the res
 
 **Installation**:
 
-1. Copy `udcd_uvc.skprx` to your PSVita
+1. Copy `udcd_uvc.skprx`, `udcd_uvc.txt`, and `udvc_uvc_config.vpk` to your PSVita
 2. Add `udcd_uvc.skprx` to taiHEN's config (`ur0:/tai/config.txt` or `ux0:/tai/config.txt`):
 ```
 *KERNEL
 ur0:tai/udcd_uvc.skprx
 ```
-3. Reboot your PSVita.
+3. Copy `udcd_uvc.txt` into `ur0:/tai/` or `ux0:/tai/` (Same directory as plugin)
+4. Install `udcd_uvc_config.vpk`
+5. Reboot your PSVita
+6. Launch the app to change configuration settings
 
 The build is **universal**: the same `udcd_uvc.skprx` auto-detects OLED (PCH-1000)
 and LCD (PCH-2000) models, so there's no longer a separate file per model.
@@ -52,8 +55,7 @@ This fork adds:
   screen on/off by hand.
 * **Keep-awake** — the console won't auto-suspend while capturing.
 * **LED feedback** — the PS-button LED blips twice when a host starts capturing.
-* **Config file** — drop a `udcd_uvc.txt` at `ux0:/data/` or `ur0:/tai/` to set
-  the default resolution/FPS, screen-off behaviour, keep-awake, and boot delay
+* **Config file** —  set the default resolution/FPS, screen-off behaviour, keep-awake, and boot delay
   without recompiling. See the bundled `udcd_uvc.txt` for the keys.
 
 ## Troubleshooting
