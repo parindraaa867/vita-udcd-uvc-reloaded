@@ -56,9 +56,6 @@ This fork adds:
   the default resolution/FPS, screen-off behaviour, keep-awake, and boot delay
   without recompiling. See the bundled `udcd_uvc.txt` for the keys.
 
-A single-buffer fallback build (`udcd_uvc_singlebuf.skprx`) is also provided in
-case the double allocation can't be satisfied on a given unit.
-
 ## Troubleshooting
 
 If the video looks glitched, try to change the video player configuration to use the *NV12* format or switch to another player (like PotPlayer or OBS). If the colors look wrong, set color range to full and color space to BT.601 (Rec. 601).
