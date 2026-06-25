@@ -1,0 +1,24 @@
+# udcd_uvc configuration (optional)
+#
+# Copy this file to ONE of:
+#   ux0:/data/udcd_uvc.txt
+#   ur0:/tai/udcd_uvc.txt     (read earliest at boot - most reliable)
+#
+# Lines are "key = value". '#' or ';' start a comment. If the file is missing,
+# the built-in defaults (shown below) are used. The companion app
+# (udcd_uvc_config.vpk) writes this file for you.
+#
+# NOTE: resolution and frame rate are NOT set here - the plugin advertises all
+# modes over UVC and you pick them in your capture app (OBS, etc.).
+
+# Blank the Vita screen while a host is capturing. 1 = on, 0 = off.
+screen_off = 1
+
+# Allow SELECT + UP to toggle the screen on/off by hand while capturing.
+screen_toggle = 1
+
+# Keep the console from auto-suspending while capturing. 1 = on, 0 = off.
+prevent_suspend = 1
+
+# Seconds to wait at boot before the USB device goes live.
+livearea_delay = 15

@@ -84,12 +84,33 @@ static struct __attribute__((packed)) {
 };
 
 DECLARE_UVC_INPUT_HEADER_DESCRIPTOR(1, 1);
-DECLARE_UVC_FRAME_UNCOMPRESSED(2);
+DECLARE_UVC_FRAME_UNCOMPRESSED(4);
+
+/* Each resolution advertises 60/48/30/24 FPS. */
+#define NV12_FRAME(idx, w, h) \
+	(struct UVC_FRAME_UNCOMPRESSED(4)){ \
+		.bLength			= UVC_DT_FRAME_UNCOMPRESSED_SIZE(4), \
+		.bDescriptorType		= USB_DT_CS_INTERFACE, \
+		.bDescriptorSubType		= UVC_VS_FRAME_UNCOMPRESSED, \
+		.bFrameIndex			= (idx), \
+		.bmCapabilities			= 0, \
+		.wWidth				= (w), \
+		.wHeight			= (h), \
+		.dwMinBitRate			= FRAME_BITRATE((w), (h), 12, FPS_TO_INTERVAL(24)), \
+		.dwMaxBitRate			= FRAME_BITRATE((w), (h), 12, FPS_TO_INTERVAL(60)), \
+		.dwMaxVideoFrameBufferSize	= VIDEO_FRAME_SIZE_NV12((w), (h)), \
+		.dwDefaultFrameInterval		= FPS_TO_INTERVAL(60), \
+		.bFrameIntervalType		= 4, \
+		.dwFrameInterval		= { \
+			FPS_TO_INTERVAL(60), FPS_TO_INTERVAL(48), \
+			FPS_TO_INTERVAL(30), FPS_TO_INTERVAL(24), \
+		}, \
+	}
 
 static struct __attribute__((packed)) {
 	struct UVC_INPUT_HEADER_DESCRIPTOR(1, 1) input_header_descriptor;
 	struct uvc_format_uncompressed format_uncompressed_nv12;
-	struct UVC_FRAME_UNCOMPRESSED(2) frames_uncompressed_nv12[5];
+	struct UVC_FRAME_UNCOMPRESSED(4) frames_uncompressed_nv12[4];
 	struct uvc_color_matching_descriptor format_uncompressed_nv12_color_matching;
 } video_streaming_descriptors = {
 	.input_header_descriptor = {
@@ -112,7 +133,7 @@ static struct __attribute__((packed)) {
 		.bDescriptorType		= USB_DT_CS_INTERFACE,
 		.bDescriptorSubType		= UVC_VS_FORMAT_UNCOMPRESSED,
 		.bFormatIndex			= FORMAT_INDEX_UNCOMPRESSED_NV12,
-		.bNumFrameDescriptors		= 5,
+		.bNumFrameDescriptors		= 4,
 		.guidFormat			= UVC_GUID_FORMAT_NV12,
 		.bBitsPerPixel			= 12,
 		.bDefaultFrameIndex		= 1,
@@ -122,89 +143,27 @@ static struct __attribute__((packed)) {
 		.bCopyProtect			= 0,
 	},
 	.frames_uncompressed_nv12 = {
-		(struct UVC_FRAME_UNCOMPRESSED(2)){
-			.bLength			= UVC_DT_FRAME_UNCOMPRESSED_SIZE(2),
-			.bDescriptorType		= USB_DT_CS_INTERFACE,
-			.bDescriptorSubType		= UVC_VS_FRAME_UNCOMPRESSED,
-			.bFrameIndex			= 1,
-			.bmCapabilities			= 0,
-			.wWidth				= 960,
-			.wHeight			= 544,
-			.dwMinBitRate			= FRAME_BITRATE(960, 544, 12, FPS_TO_INTERVAL(30)),
-			.dwMaxBitRate			= FRAME_BITRATE(960, 544, 12, FPS_TO_INTERVAL(60)),
-			.dwMaxVideoFrameBufferSize	= VIDEO_FRAME_SIZE_NV12(960, 544),
-			.dwDefaultFrameInterval		= FPS_TO_INTERVAL(60),
-			.bFrameIntervalType		= 2,
-			.dwFrameInterval		= {FPS_TO_INTERVAL(60), FPS_TO_INTERVAL(30)},
-		},
-		(struct UVC_FRAME_UNCOMPRESSED(2)){
-			.bLength			= UVC_DT_FRAME_UNCOMPRESSED_SIZE(2),
-			.bDescriptorType		= USB_DT_CS_INTERFACE,
-			.bDescriptorSubType		= UVC_VS_FRAME_UNCOMPRESSED,
-			.bFrameIndex			= 2,
-			.bmCapabilities			= 0,
-			.wWidth				= 896,
-			.wHeight			= 504,
-			.dwMinBitRate			= FRAME_BITRATE(896, 504, 12, FPS_TO_INTERVAL(30)),
-			.dwMaxBitRate			= FRAME_BITRATE(896, 504, 12, FPS_TO_INTERVAL(60)),
-			.dwMaxVideoFrameBufferSize	= VIDEO_FRAME_SIZE_NV12(896, 504),
-			.dwDefaultFrameInterval		= FPS_TO_INTERVAL(60),
-			.bFrameIntervalType		= 2,
-			.dwFrameInterval		= {FPS_TO_INTERVAL(60), FPS_TO_INTERVAL(30)},
-		},
-		(struct UVC_FRAME_UNCOMPRESSED(2)){
-			.bLength			= UVC_DT_FRAME_UNCOMPRESSED_SIZE(2),
-			.bDescriptorType		= USB_DT_CS_INTERFACE,
-			.bDescriptorSubType		= UVC_VS_FRAME_UNCOMPRESSED,
-			.bFrameIndex			= 3,
-			.bmCapabilities			= 0,
-			.wWidth				= 864,
-			.wHeight			= 488,
-			.dwMinBitRate			= FRAME_BITRATE(864, 488, 12, FPS_TO_INTERVAL(30)),
-			.dwMaxBitRate			= FRAME_BITRATE(864, 488, 12, FPS_TO_INTERVAL(60)),
-			.dwMaxVideoFrameBufferSize	= VIDEO_FRAME_SIZE_NV12(864, 488),
-			.dwDefaultFrameInterval		= FPS_TO_INTERVAL(60),
-			.bFrameIntervalType		= 2,
-			.dwFrameInterval		= {FPS_TO_INTERVAL(60), FPS_TO_INTERVAL(30)},
-		},
-		(struct UVC_FRAME_UNCOMPRESSED(2)){
-			.bLength			= UVC_DT_FRAME_UNCOMPRESSED_SIZE(2),
-			.bDescriptorType		= USB_DT_CS_INTERFACE,
-			.bDescriptorSubType		= UVC_VS_FRAME_UNCOMPRESSED,
-			.bFrameIndex			= 4,
-			.bmCapabilities			= 0,
-			.wWidth				= 480,
-			.wHeight			= 272,
-			.dwMinBitRate			= FRAME_BITRATE(480, 272, 12, FPS_TO_INTERVAL(30)),
-			.dwMaxBitRate			= FRAME_BITRATE(480, 272, 12, FPS_TO_INTERVAL(60)),
-			.dwMaxVideoFrameBufferSize	= VIDEO_FRAME_SIZE_NV12(480, 272),
-			.dwDefaultFrameInterval		= FPS_TO_INTERVAL(60),
-			.bFrameIntervalType		= 2,
-			.dwFrameInterval		= {FPS_TO_INTERVAL(60), FPS_TO_INTERVAL(30)},
-		},
-		(struct UVC_FRAME_UNCOMPRESSED(2)){
-			.bLength			= UVC_DT_FRAME_UNCOMPRESSED_SIZE(2),
-			.bDescriptorType		= USB_DT_CS_INTERFACE,
-			.bDescriptorSubType		= UVC_VS_FRAME_UNCOMPRESSED,
-			.bFrameIndex			= 5,
-			.bmCapabilities			= 0,
-			.wWidth				= 1280,
-			.wHeight			= 720,
-			.dwMinBitRate			= FRAME_BITRATE(1280, 720, 12, FPS_TO_INTERVAL(20)),
-			.dwMaxBitRate			= FRAME_BITRATE(1280, 720, 12, FPS_TO_INTERVAL(30)),
-			.dwMaxVideoFrameBufferSize	= VIDEO_FRAME_SIZE_NV12(1280, 720),
-			.dwDefaultFrameInterval		= FPS_TO_INTERVAL(30),
-			.bFrameIntervalType		= 2,
-			.dwFrameInterval		= {FPS_TO_INTERVAL(30), FPS_TO_INTERVAL(20)},
-		},
+		NV12_FRAME(1, 960, 544),
+		NV12_FRAME(2, 896, 504),
+		NV12_FRAME(3, 864, 488),
+		NV12_FRAME(4, 480, 272),
 	},
 	.format_uncompressed_nv12_color_matching = {
 		.bLength			= sizeof(video_streaming_descriptors.format_uncompressed_nv12_color_matching),
 		.bDescriptorType		= USB_DT_CS_INTERFACE,
 		.bDescriptorSubType		= UVC_VS_COLORFORMAT,
-		.bColorPrimaries		= 0,
-		.bTransferCharacteristics	= 0,
-		.bMatrixCoefficients		= 0,
+		/*
+		 * Advertise the color space we actually produce so compliant
+		 * hosts decode it correctly instead of guessing (which is what
+		 * made colors look off and needed manual player tweaks).
+		 * The IFTU CSC matrix below is full-range BT.601 (JPEG), so:
+		 *   primaries           = BT.709 / sRGB  (the Vita panel)
+		 *   transfer            = BT.709
+		 *   matrix coefficients = SMPTE 170M (BT.601)
+		 */
+		.bColorPrimaries		= 1,
+		.bTransferCharacteristics	= 1,
+		.bMatrixCoefficients		= 4,
 	},
 };
 
