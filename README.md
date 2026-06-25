@@ -71,3 +71,8 @@ On Linux I recommend using *mplayer* (`mplayer tv:// -tv driver=v4l2:device=/dev
 Note: Remember that if anything goes wrong (like PSVita not booting) you can always press L at boot to skip plugin loading.
 
 Note 2: No, it *doesn't* stream audio. For that use a 3.5mm jack to jack adapter (a ferrite bead might help reduce the electromagnetic noise).
+
+
+
+
+## Checked over with Claude
