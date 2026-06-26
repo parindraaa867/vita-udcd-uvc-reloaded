@@ -40,13 +40,13 @@ static vita2d_pgf *font;
  * every mode over UVC and the capture app (OBS, etc.) selects them. This app
  * only covers the Vita-side settings the host can't control.
  */
-enum { O_SCREEN, O_TOGGLE, O_SUSPEND, O_DELAY, O_COUNT };
+enum { O_SCREEN, O_TOGGLE, O_LOWLAT, O_SUSPEND, O_IDLE, O_DELAY, O_COUNT };
 
-static int v_screen, v_toggle, v_suspend, v_delay;
+static int v_screen, v_toggle, v_lowlat, v_suspend, v_idle, v_delay;
 
 static void config_defaults(void)
 {
-	v_screen = 1; v_toggle = 1; v_suspend = 1; v_delay = 15;
+	v_screen = 1; v_toggle = 1; v_lowlat = 0; v_suspend = 1; v_idle = 0; v_delay = 15;
 }
 
 static int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -64,6 +64,8 @@ static void config_set(const char *key, const char *val)
 	if (!strcmp(key, "screen_off"))           v_screen  = p_uint(val) ? 1 : 0;
 	else if (!strcmp(key, "prevent_suspend")) v_suspend = p_uint(val) ? 1 : 0;
 	else if (!strcmp(key, "screen_toggle"))   v_toggle  = p_uint(val) ? 1 : 0;
+	else if (!strcmp(key, "low_latency"))     v_lowlat  = p_uint(val) ? 1 : 0;
+	else if (!strcmp(key, "idle_screen_off")) v_idle    = clampi((int)p_uint(val), 0, 30);
 	else if (!strcmp(key, "livearea_delay"))  v_delay   = clampi((int)p_uint(val), 0, 30);
 	/* res / fps are ignored here - the capture app picks those. */
 }
@@ -109,13 +111,23 @@ static int config_save(void)
 		"# resolution & frame rate are chosen in your capture app (OBS, etc.)\n"
 		"screen_off = %d\n"
 		"screen_toggle = %d\n"
+		"low_latency = %d\n"
 		"prevent_suspend = %d\n"
+		"idle_screen_off = %d\n"
 		"livearea_delay = %d\n",
-		v_screen, v_toggle, v_suspend, v_delay);
+		v_screen, v_toggle, v_lowlat, v_suspend, v_idle, v_delay);
 	SceUID fd = sceIoOpen(CONFIG_PATH, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0666);
 	if (fd < 0) return fd;
 	sceIoWrite(fd, buf, len);
 	sceIoClose(fd);
+
+	/* Tell the running plugin to re-read the config (apply without reboot). */
+	SceUID t = sceIoOpen("ux0:/data/udcd_uvc_reload",
+			     SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0666);
+	if (t >= 0) {
+		sceIoWrite(t, "1", 1);
+		sceIoClose(t);
+	}
 	return 0;
 }
 
@@ -124,7 +136,9 @@ static void config_adjust(int sel, int dir)
 	switch (sel) {
 	case O_SCREEN:  v_screen = !v_screen; break;
 	case O_TOGGLE:  v_toggle = !v_toggle; break;
+	case O_LOWLAT:  v_lowlat = !v_lowlat; break;
 	case O_SUSPEND: v_suspend = !v_suspend; break;
+	case O_IDLE:    v_idle = clampi(v_idle + dir, 0, 30); break;
 	case O_DELAY:   v_delay = clampi(v_delay + dir, 0, 30); break;
 	}
 }
@@ -134,7 +148,9 @@ static const char *opt_label(int i)
 	switch (i) {
 	case O_SCREEN:  return "Screen off while capturing";
 	case O_TOGGLE:  return "SELECT+UP screen toggle";
+	case O_LOWLAT:  return "Low-latency mode";
 	case O_SUSPEND: return "Keep console awake";
+	case O_IDLE:    return "Idle screen-off (min)";
 	case O_DELAY:   return "Startup delay";
 	}
 	return "";
@@ -145,7 +161,9 @@ static void opt_value(int i, char *out, int n)
 	switch (i) {
 	case O_SCREEN:  snprintf(out, n, "%s", v_screen ? "On" : "Off"); break;
 	case O_TOGGLE:  snprintf(out, n, "%s", v_toggle ? "On" : "Off"); break;
+	case O_LOWLAT:  snprintf(out, n, "%s", v_lowlat ? "On" : "Off"); break;
 	case O_SUSPEND: snprintf(out, n, "%s", v_suspend ? "On" : "Off"); break;
+	case O_IDLE:    snprintf(out, n, v_idle ? "%d min" : "Off", v_idle); break;
 	case O_DELAY:   snprintf(out, n, "%d s", v_delay); break;
 	}
 }
@@ -155,7 +173,7 @@ static void opt_value(int i, char *out, int n)
  */
 #define LIST_X	60
 #define LIST_Y0	150
-#define ROW_H	72
+#define ROW_H	52
 #define ROW_W	840
 #define BTN_W	48
 #define BTN_H	44
@@ -191,6 +209,30 @@ static void button(Rect r, const char *label, unsigned int bg, unsigned int fg)
 	txt_center((int)(r.x + r.w / 2), (int)(r.y + r.h / 2 + 8), 1.1f, fg, label);
 }
 
+/* ---- runtime status from the plugin (dashboard) ---- */
+static int st_stream = -1;	/* -1 = no plugin, 0 = idle, 1 = capturing */
+static int st_w, st_h;
+static unsigned int st_iu, st_xu;	/* requested interval / measured xfer (us) */
+
+static void status_read(void)
+{
+	char b[96];
+	int vals[5] = {0}, vi = 0, has = 0, n, i;
+	unsigned int cur = 0;
+	SceUID fd = sceIoOpen("ux0:/data/udcd_uvc_status.txt", SCE_O_RDONLY, 0);
+	if (fd < 0) { st_stream = -1; return; }
+	n = sceIoRead(fd, b, sizeof(b) - 1);
+	sceIoClose(fd);
+	if (n <= 0) { st_stream = -1; return; }
+	for (i = 0; i < n && vi < 5; i++) {
+		if (b[i] >= '0' && b[i] <= '9') { cur = cur * 10 + (b[i] - '0'); has = 1; }
+		else if (has) { vals[vi++] = (int)cur; cur = 0; has = 0; }
+	}
+	if (has && vi < 5) vals[vi++] = (int)cur;
+	st_stream = vals[0]; st_w = vals[1]; st_h = vals[2];
+	st_iu = (unsigned)vals[3]; st_xu = (unsigned)vals[4];
+}
+
 int main(void)
 {
 	sceSysmoduleLoadModule(SCE_SYSMODULE_PGF);
@@ -206,7 +248,7 @@ int main(void)
 	int sel = 0;
 	float hl_y = LIST_Y0, intro = 0.0f, flash = 0.0f, toast = 0.0f;
 	unsigned int prev_btn = 0;
-	int prev_touch = 0, hold = 0;
+	int prev_touch = 0, hold = 0, tick = 0;
 
 	for (;;) {
 		/* ---- input ---- */
@@ -249,6 +291,10 @@ int main(void)
 		}
 		prev_touch = (tp.reportNum > 0);
 
+		/* refresh the plugin status ~2x/sec */
+		if ((tick++ % 30) == 0)
+			status_read();
+
 		/* ---- animation ---- */
 		hl_y += (row_y(sel) - hl_y) * 0.30f;
 		intro += 0.06f; if (intro > 1.0f) intro = 1.0f;
@@ -265,6 +311,29 @@ int main(void)
 		vita2d_draw_rectangle(0, 96, SCR_W, 3, COL_ACCENT);
 		txt(LIST_X, 50, 1.9f, COL_TEXT, "udcd-uvc");
 		txt(LIST_X, 80, 1.0f, COL_ACCENT, "capture configuration");
+
+		/* dashboard line (live status from the plugin) */
+		{
+			char ds[80];
+			unsigned int cap = 0;
+			if (st_stream < 0) {
+				snprintf(ds, sizeof(ds), "Plugin: not detected");
+			} else if (!st_stream) {
+				snprintf(ds, sizeof(ds), "Idle - waiting for a host to capture");
+			} else {
+				unsigned int bytes = (unsigned)st_w * st_h * 3 / 2;
+				unsigned int mbps = st_xu ? bytes / st_xu : 0;
+				unsigned int worst = st_xu > st_iu ? st_xu : st_iu;
+				unsigned int fps = worst ? 1000000u / worst : 0;
+				unsigned int req = st_iu ? 1000000u / st_iu : 0;
+				cap = (req && fps * 10 < req * 9);
+				snprintf(ds, sizeof(ds), "Capturing %dx%d  ~%u fps  %u MB/s%s",
+					 st_w, st_h, fps, mbps, cap ? "  - lower res in OBS" : "");
+			}
+			txt(LIST_X, 130, 0.95f,
+			    cap ? RGBA8(255, 170, 60, 255)
+				: (st_stream > 0 ? COL_ACCENT : COL_DIM), ds);
+		}
 
 		/* animated selection highlight */
 		{
@@ -283,13 +352,13 @@ int main(void)
 			char val[40];
 			opt_value(i, val, sizeof(val));
 
-			txt(LIST_X + 8, y + 46, 1.1f, selrow ? COL_TEXT : COL_DIM, opt_label(i));
+			txt(LIST_X + 8, y + 34, 1.0f, selrow ? COL_TEXT : COL_DIM, opt_label(i));
 
 			Rect mn = minus_rect(i), pl = plus_rect(i);
 			mn.y += slide; pl.y += slide;
 			button(mn, "<", selrow ? COL_BTN : COL_ROW, selrow ? COL_ACCENT : COL_DIM);
 			button(pl, ">", selrow ? COL_BTN : COL_ROW, selrow ? COL_ACCENT : COL_DIM);
-			txt_center((int)((mn.x + mn.w + pl.x) / 2), y + 46, 1.2f,
+			txt_center((int)((mn.x + mn.w + pl.x) / 2), y + 34, 1.1f,
 				   selrow ? COL_ACCENT : COL_TEXT, val);
 		}
 
@@ -305,7 +374,7 @@ int main(void)
 			vita2d_draw_rectangle(SCR_W / 2 - 230, 110, 460, 44,
 				RGBA8(0, 214, 180, a * 90 / 255));
 			txt_center(SCR_W / 2, 140, 1.0f, RGBA8(236, 239, 245, a),
-				   "Saved - reboot to apply");
+				   "Saved & applied");
 		}
 
 		vita2d_end_drawing();

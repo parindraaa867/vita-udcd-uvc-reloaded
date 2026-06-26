@@ -128,6 +128,8 @@ static int cfg_livearea_delay	= 15;	/* seconds to wait at boot before going live
 static int cfg_default_frame	= 1;	/* 1=960x544, 2=896x504, 3=864x488, 4=480x272   */
 static int cfg_default_fps	= 60;	/* default frame rate advertised to the host    */
 static int cfg_screen_toggle	= 1;	/* allow SELECT+UP to toggle the screen manually*/
+static int cfg_low_latency	= 0;	/* serialize convert/send for lowest latency    */
+static int cfg_idle_screen_off	= 0;	/* blank screen after N min idle (0 = off)       */
 
 /* dwFrameInterval (100ns units) for a given fps. */
 #define FPS_INTERVAL(fps)	(10000000u / (fps))
@@ -169,6 +171,7 @@ static SceUID eventflag_srcfb_ready;
 #if ENCODE_SEND_PARALLELIZE
 static SceUID uvc_send_thread_id;
 static SceUID eventflag_dstfb_ready;
+static SceUID eventflag_sent;	/* signalled after each USB send (low-latency) */
 #endif
 static volatile NextTransferState next_xfer;
 static int uvc_thread_run;
@@ -191,6 +194,8 @@ static int display_is_off;
 static volatile int streaming_active;
 /* Manual screen override toggled by the button combo (reset on each capture start/stop). */
 static volatile int user_toggle;
+/* Set by the idle timer to blank the screen after inactivity (idle_screen_off). */
+static volatile int idle_blank;
 
 static void display_detect(void)
 {
@@ -242,6 +247,9 @@ static void display_apply(void)
 	if (user_toggle)
 		off = !off;
 
+	if (idle_blank)		/* idle timeout forces the screen off */
+		off = 1;
+
 	if (off)
 		display_set_off();
 	else
@@ -271,6 +279,10 @@ static void apply_config_kv(const char *key, const char *val)
 		cfg_livearea_delay = (int)parse_uint(val);
 	else if (!strcmp(key, "screen_toggle"))
 		cfg_screen_toggle = parse_uint(val) ? 1 : 0;
+	else if (!strcmp(key, "low_latency"))
+		cfg_low_latency = parse_uint(val) ? 1 : 0;
+	else if (!strcmp(key, "idle_screen_off"))
+		cfg_idle_screen_off = (int)parse_uint(val);
 	else if (!strcmp(key, "fps")) {
 		unsigned int f = parse_uint(val);
 		if (f)
@@ -917,22 +929,38 @@ static int convert_frame(void)
 	return 0;
 }
 
+/*
+ * Smoothed time (microseconds) the last USB frame transfers actually took.
+ * Used to adaptively pace the capture: if the wire can't sustain the host's
+ * requested FPS, we trigger frames no faster than transfers complete, so the
+ * effective FPS degrades gracefully instead of building a latency backlog.
+ */
+static volatile unsigned int xfer_ema_us;
+
 static int send_frame(void)
 {
 	static int fid = 0;
 
 	int ret;
+	uint64_t t0;
 
 	NextTransferState now_xfer = next_xfer;
 
 	if (uvc_frame_buffer_uid[now_xfer.fb_idx] < 0)
 		return -1;
 
+	t0 = ksceKernelGetSystemTimeWide();
 	ret = uvc_frame_transfer(uvc_frame_buffer_addr[now_xfer.fb_idx],
 				 UVC_PAYLOAD_SIZE(now_xfer.frame_size), fid, 1);
 	if (ret < 0) {
 		LOG("Error sending frame: 0x%08X\n", ret);
 		return ret;
+	}
+
+	/* Exponential moving average of the transfer time (1/4 weight). */
+	{
+		unsigned int dt = (unsigned int)(ksceKernelGetSystemTimeWide() - t0);
+		xfer_ema_us = xfer_ema_us ? (xfer_ema_us - xfer_ema_us / 4 + dt / 4) : dt;
 	}
 
 	fid ^= 1;
@@ -954,7 +982,17 @@ static int display_vblank_cb_func(int notifyId, int notifyCount, int notifyArg, 
 	frames += notifyCount;
 	elapsed = FPS_TO_INTERVAL(60 / frames);
 
-	if (elapsed >= uvc_probe_control_setting.dwFrameInterval) {
+	/*
+	 * Pace to the slower of the host's requested interval and the measured
+	 * USB transfer time (converted us -> 100ns units). When the wire is the
+	 * limit, this drops us to a sustainable FPS instead of queueing frames.
+	 */
+	unsigned int target = uvc_probe_control_setting.dwFrameInterval;
+	unsigned int adaptive = xfer_ema_us * 10;
+	if (adaptive > target)
+		target = adaptive;
+
+	if (elapsed >= target) {
 		ksceKernelSetEventFlag(eventflag_srcfb_ready, 1);
 		frames = 0;
 	}
@@ -962,21 +1000,80 @@ static int display_vblank_cb_func(int notifyId, int notifyCount, int notifyArg, 
 	return 0;
 }
 
+/* Append an unsigned decimal to a buffer; returns chars written. */
+static int app_u(char *b, unsigned int v)
+{
+	char t[12];
+	int n = 0, p = 0;
+	if (!v) { b[0] = '0'; return 1; }
+	while (v) { t[n++] = '0' + v % 10; v /= 10; }
+	while (n) b[p++] = t[--n];
+	return p;
+}
+
 /*
- * Housekeeping: owns the display power, debounces the stream state, keeps the
- * console awake while capturing, blips the LED on capture start, and handles
- * the manual screen-toggle button combo. Runs in its own thread so all the
- * display/IO calls happen in a safe context (never from a USB callback).
+ * Publish runtime status for the config app dashboard:
+ *   "streaming width height interval_us xfer_us"
+ */
+static void status_write(void)
+{
+	char buf[96];
+	int p = 0, idx = uvc_probe_control_setting.bFrameIndex;
+	unsigned int w = 0, h = 0;
+	unsigned int iu = uvc_probe_control_setting.dwFrameInterval / 10;
+
+	if (idx >= 1 && idx <= 4) {
+		w = video_streaming_descriptors.frames_uncompressed_nv12[idx - 1].wWidth;
+		h = video_streaming_descriptors.frames_uncompressed_nv12[idx - 1].wHeight;
+	}
+	p += app_u(buf + p, streaming_active); buf[p++] = ' ';
+	p += app_u(buf + p, w);                buf[p++] = ' ';
+	p += app_u(buf + p, h);                buf[p++] = ' ';
+	p += app_u(buf + p, iu);               buf[p++] = ' ';
+	p += app_u(buf + p, xfer_ema_us);      buf[p++] = '\n';
+
+	SceUID fd = ksceIoOpen("ux0:/data/udcd_uvc_status.txt",
+			       SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0666);
+	if (fd >= 0) {
+		ksceIoWrite(fd, buf, p);
+		ksceIoClose(fd);
+	}
+}
+
+/*
+ * Housekeeping: owns display power, debounces the stream state, keeps the
+ * console awake while capturing, handles the manual screen-toggle combo, the
+ * idle screen-off timer, live config reload, and the status dashboard file.
  */
 static int uvc_housekeeping_thread(SceSize args, void *argp)
 {
 	unsigned int prev_buttons = 0;
 	uint64_t last_active = 0;
+	uint64_t last_cfg_check = 0;
+	uint64_t last_status = 0;
+	uint64_t last_input;
 
 	display_detect();
+	last_input = ksceKernelGetSystemTimeWide();
 
 	while (uvc_thread_run) {
 		uint64_t now = ksceKernelGetSystemTimeWide();
+
+		/*
+		 * "Apply without reboot": the config app drops a trigger file when
+		 * it saves. Re-read the config (at most once/sec) so screen-off,
+		 * screen-toggle and keep-awake update live - no reboot needed.
+		 */
+		if (now - last_cfg_check > 1000000) {
+			SceUID tfd = ksceIoOpen("ux0:/data/udcd_uvc_reload",
+						SCE_O_RDONLY, 0);
+			if (tfd >= 0) {
+				ksceIoClose(tfd);
+				ksceIoRemove("ux0:/data/udcd_uvc_reload");
+				read_config();
+			}
+			last_cfg_check = now;
+		}
 
 		/* Debounce the capture state so quick OBS re-negotiations don't
 		 * count as "stopped". */
@@ -995,19 +1092,34 @@ static int uvc_housekeeping_thread(SceSize args, void *argp)
 		if (cfg_prevent_suspend && streaming_active)
 			ksceKernelPowerTick(SCE_KERNEL_POWER_TICK_DISABLE_AUTO_SUSPEND);
 
-		/* Manual screen toggle (only while capturing, if enabled). */
-		if (cfg_screen_off && cfg_screen_toggle) {
+		/* Poll the controller once: drives the toggle combo and idle-wake. */
+		{
 			SceCtrlData cd;
 			if (ksceCtrlPeekBufferPositive(0, &cd, 1) >= 0) {
-				int combo_now = (cd.buttons & UVC_TOGGLE_COMBO) == UVC_TOGGLE_COMBO;
-				int combo_prev = (prev_buttons & UVC_TOGGLE_COMBO) == UVC_TOGGLE_COMBO;
-				if (combo_now && !combo_prev && streaming_active)
-					user_toggle ^= 1;
+				if (cd.buttons || streaming_active)
+					last_input = now;
+				if (cfg_screen_off && cfg_screen_toggle) {
+					int combo_now = (cd.buttons & UVC_TOGGLE_COMBO) == UVC_TOGGLE_COMBO;
+					int combo_prev = (prev_buttons & UVC_TOGGLE_COMBO) == UVC_TOGGLE_COMBO;
+					if (combo_now && !combo_prev && streaming_active)
+						user_toggle ^= 1;
+				}
 				prev_buttons = cd.buttons;
 			}
 		}
 
+		/* Idle screen-off: blank after N min with no input and no capture. */
+		idle_blank = (cfg_idle_screen_off > 0 && !streaming_active &&
+			      (now - last_input) >
+			      (uint64_t)cfg_idle_screen_off * 60 * 1000000ull);
+
 		display_apply();
+
+		/* Publish status (~1/sec) for the config app dashboard. */
+		if (now - last_status > 1000000) {
+			status_write();
+			last_status = now;
+		}
 
 		ksceKernelDelayThreadCB(50 * 1000);
 	}
@@ -1040,6 +1152,18 @@ static int uvc_convert_thread(SceSize args, void *argp)
 			convert_frame();
 #if !ENCODE_SEND_PARALLELIZE
 			send_frame();
+#else
+			/*
+			 * Low-latency mode: wait for the USB send to finish before
+			 * grabbing the next frame (1 in flight). Trades the convert/
+			 * send overlap for the freshest possible frame each cycle.
+			 */
+			if (cfg_low_latency) {
+				unsigned int ob;
+				ksceKernelWaitEventFlagCB(eventflag_sent, 1,
+					SCE_EVENT_WAITOR | SCE_EVENT_WAITCLEAR_PAT,
+					&ob, (SceUInt32[]){200000});
+			}
 #endif
 		}
 	}
@@ -1069,8 +1193,10 @@ static int uvc_send_thread(SceSize args, void *argp)
 			SCE_EVENT_WAITOR | SCE_EVENT_WAITCLEAR_PAT,
 			&out_bits, (SceUInt32[]){1000000});
 
-		if (ret == 0 && stream)
+		if (ret == 0 && stream) {
 			send_frame();
+			ksceKernelSetEventFlag(eventflag_sent, 1);
+		}
 	}
 
 	uvc_stop();
@@ -1351,6 +1477,12 @@ int module_start(SceSize argc, const void *args)
 		LOG("Error creating the UVC dstfb event flag (0x%08X)\n", eventflag_dstfb_ready);
 		goto err_delete_srcfb_event_flag;
 	}
+	eventflag_sent = ksceKernelCreateEventFlag("eventflag_sent", 0, 0, NULL);
+	if (eventflag_sent < 0) {
+		LOG("Error creating the UVC sent event flag (0x%08X)\n", eventflag_sent);
+		ksceKernelDeleteEventFlag(eventflag_dstfb_ready);
+		goto err_delete_srcfb_event_flag;
+	}
 #endif
 
 	ret = ksceUdcdRegister(&uvc_udcd_driver);
@@ -1396,6 +1528,7 @@ err_unregister:
 	ksceUdcdUnregister(&uvc_udcd_driver);
 err_delete_event_flag:
 #if ENCODE_SEND_PARALLELIZE
+	ksceKernelDeleteEventFlag(eventflag_sent);
 	ksceKernelDeleteEventFlag(eventflag_dstfb_ready);
 err_delete_srcfb_event_flag:
 #endif
@@ -1430,6 +1563,7 @@ int module_stop(SceSize argc, const void *args)
 	ksceKernelDeleteThread(uvc_convert_thread_id);
 	ksceKernelDeleteThread(uvc_housekeeping_thread_id);
 #if ENCODE_SEND_PARALLELIZE
+	ksceKernelDeleteEventFlag(eventflag_sent);
 	ksceKernelDeleteEventFlag(eventflag_dstfb_ready);
 	ksceKernelDeleteThread(uvc_send_thread_id);
 #endif
