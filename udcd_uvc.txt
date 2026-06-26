@@ -17,8 +17,18 @@ screen_off = 1
 # Allow SELECT + UP to toggle the screen on/off by hand while capturing.
 screen_toggle = 1
 
+# Low-latency mode: 1 = grab the freshest frame each cycle (lower latency,
+# slightly lower max FPS); 0 = throughput/overlap (default).
+low_latency = 0
+
 # Keep the console from auto-suspending while capturing. 1 = on, 0 = off.
 prevent_suspend = 1
 
+# Blank the screen after N minutes idle (not capturing). 0 = off.
+idle_screen_off = 0
+
 # Seconds to wait at boot before the USB device goes live.
 livearea_delay = 15
+
+# All of the above (except livearea_delay) apply live - the config app tells
+# the running plugin to re-read this file, no reboot needed.
