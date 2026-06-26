@@ -211,17 +211,25 @@ static void display_detect(void)
 
 static void display_set_off(void)
 {
-	if (display_is_off)
-		return;
-	display_is_off = 1;
-
-	if (display_type == DISPLAY_OLED) {
-		prev_brightness = ksceOledGetBrightness();
-		ksceOledDisplayOff();
-	} else if (display_type == DISPLAY_LCD) {
-		prev_brightness = ksceLcdGetBrightness();
-		ksceLcdDisplayOff();
+	/* Save the brightness only on the first off transition... */
+	if (!display_is_off) {
+		display_is_off = 1;
+		if (display_type == DISPLAY_OLED)
+			prev_brightness = ksceOledGetBrightness();
+		else if (display_type == DISPLAY_LCD)
+			prev_brightness = ksceLcdGetBrightness();
 	}
+
+	/*
+	 * ...but re-issue DisplayOff every call. display_apply() runs each
+	 * housekeeping tick, so if the system's idle timer flicks the panel
+	 * back on, we blank it again within ~50ms instead of being fooled by
+	 * the (stale) display_is_off flag.
+	 */
+	if (display_type == DISPLAY_OLED)
+		ksceOledDisplayOff();
+	else if (display_type == DISPLAY_LCD)
+		ksceLcdDisplayOff();
 }
 
 static void display_set_on(void)
@@ -1088,9 +1096,14 @@ static int uvc_housekeeping_thread(SceSize args, void *argp)
 			user_toggle = 0;
 		}
 
-		/* Keep the console from auto-suspending mid-capture. */
-		if (cfg_prevent_suspend && streaming_active)
-			ksceKernelPowerTick(SCE_KERNEL_POWER_TICK_DISABLE_AUTO_SUSPEND);
+		/*
+		 * Keep the console awake mid-capture. The DEFAULT tick resets ALL
+		 * idle timers (suspend AND the display dim/off timer), so the
+		 * system's own inactivity logic can't turn our blanked screen back
+		 * on - which was happening after a few seconds of no input.
+		 */
+		if (streaming_active && (cfg_prevent_suspend || cfg_screen_off))
+			ksceKernelPowerTick(SCE_KERNEL_POWER_TICK_DEFAULT);
 
 		/* Poll the controller once: drives the toggle combo and idle-wake. */
 		{
