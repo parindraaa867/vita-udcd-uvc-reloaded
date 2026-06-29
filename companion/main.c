@@ -40,13 +40,14 @@ static vita2d_pgf *font;
  * every mode over UVC and the capture app (OBS, etc.) selects them. This app
  * only covers the Vita-side settings the host can't control.
  */
-enum { O_SCREEN, O_TOGGLE, O_LOWLAT, O_SUSPEND, O_IDLE, O_DELAY, O_COUNT };
+enum { O_SCREEN, O_TOGGLE, O_LOWLAT, O_COMPAT, O_SUSPEND, O_IDLE, O_DELAY, O_COUNT };
 
-static int v_screen, v_toggle, v_lowlat, v_suspend, v_idle, v_delay;
+static int v_screen, v_toggle, v_lowlat, v_compat, v_suspend, v_idle, v_delay;
 
 static void config_defaults(void)
 {
-	v_screen = 1; v_toggle = 1; v_lowlat = 0; v_suspend = 1; v_idle = 0; v_delay = 15;
+	v_screen = 1; v_toggle = 1; v_lowlat = 0; v_compat = 0;
+	v_suspend = 1; v_idle = 0; v_delay = 15;
 }
 
 static int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -66,6 +67,7 @@ static void config_set(const char *key, const char *val)
 	else if (!strcmp(key, "screen_toggle"))   v_toggle  = p_uint(val) ? 1 : 0;
 	else if (!strcmp(key, "low_latency"))     v_lowlat  = p_uint(val) ? 1 : 0;
 	else if (!strcmp(key, "idle_screen_off")) v_idle    = clampi((int)p_uint(val), 0, 30);
+	else if (!strcmp(key, "compat_mode"))     v_compat  = p_uint(val) ? 1 : 0;
 	else if (!strcmp(key, "livearea_delay"))  v_delay   = clampi((int)p_uint(val), 0, 30);
 	/* res / fps are ignored here - the capture app picks those. */
 }
@@ -112,10 +114,11 @@ static int config_save(void)
 		"screen_off = %d\n"
 		"screen_toggle = %d\n"
 		"low_latency = %d\n"
+		"compat_mode = %d\n"
 		"prevent_suspend = %d\n"
 		"idle_screen_off = %d\n"
 		"livearea_delay = %d\n",
-		v_screen, v_toggle, v_lowlat, v_suspend, v_idle, v_delay);
+		v_screen, v_toggle, v_lowlat, v_compat, v_suspend, v_idle, v_delay);
 	SceUID fd = sceIoOpen(CONFIG_PATH, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0666);
 	if (fd < 0) return fd;
 	sceIoWrite(fd, buf, len);
@@ -137,6 +140,7 @@ static void config_adjust(int sel, int dir)
 	case O_SCREEN:  v_screen = !v_screen; break;
 	case O_TOGGLE:  v_toggle = !v_toggle; break;
 	case O_LOWLAT:  v_lowlat = !v_lowlat; break;
+	case O_COMPAT:  v_compat = !v_compat; break;
 	case O_SUSPEND: v_suspend = !v_suspend; break;
 	case O_IDLE:    v_idle = clampi(v_idle + dir, 0, 30); break;
 	case O_DELAY:   v_delay = clampi(v_delay + dir, 0, 30); break;
@@ -149,6 +153,7 @@ static const char *opt_label(int i)
 	case O_SCREEN:  return "Screen off while capturing";
 	case O_TOGGLE:  return "SELECT+UP screen toggle";
 	case O_LOWLAT:  return "Low-latency mode";
+	case O_COMPAT:  return "Compatibility mode (1 buffer)";
 	case O_SUSPEND: return "Keep console awake";
 	case O_IDLE:    return "Idle screen-off (min)";
 	case O_DELAY:   return "Startup delay";
@@ -162,6 +167,7 @@ static void opt_value(int i, char *out, int n)
 	case O_SCREEN:  snprintf(out, n, "%s", v_screen ? "On" : "Off"); break;
 	case O_TOGGLE:  snprintf(out, n, "%s", v_toggle ? "On" : "Off"); break;
 	case O_LOWLAT:  snprintf(out, n, "%s", v_lowlat ? "On" : "Off"); break;
+	case O_COMPAT:  snprintf(out, n, "%s", v_compat ? "On" : "Off"); break;
 	case O_SUSPEND: snprintf(out, n, "%s", v_suspend ? "On" : "Off"); break;
 	case O_IDLE:    snprintf(out, n, v_idle ? "%d min" : "Off", v_idle); break;
 	case O_DELAY:   snprintf(out, n, "%d s", v_delay); break;
@@ -172,8 +178,8 @@ static void opt_value(int i, char *out, int n)
  * Layout / drawing helpers
  */
 #define LIST_X	60
-#define LIST_Y0	150
-#define ROW_H	52
+#define LIST_Y0	146
+#define ROW_H	46
 #define ROW_W	840
 #define BTN_W	48
 #define BTN_H	44
@@ -352,13 +358,13 @@ int main(void)
 			char val[40];
 			opt_value(i, val, sizeof(val));
 
-			txt(LIST_X + 8, y + 34, 1.0f, selrow ? COL_TEXT : COL_DIM, opt_label(i));
+			txt(LIST_X + 8, y + 30, 1.0f, selrow ? COL_TEXT : COL_DIM, opt_label(i));
 
 			Rect mn = minus_rect(i), pl = plus_rect(i);
 			mn.y += slide; pl.y += slide;
 			button(mn, "<", selrow ? COL_BTN : COL_ROW, selrow ? COL_ACCENT : COL_DIM);
 			button(pl, ">", selrow ? COL_BTN : COL_ROW, selrow ? COL_ACCENT : COL_DIM);
-			txt_center((int)((mn.x + mn.w + pl.x) / 2), y + 34, 1.1f,
+			txt_center((int)((mn.x + mn.w + pl.x) / 2), y + 30, 1.1f,
 				   selrow ? COL_ACCENT : COL_TEXT, val);
 		}
 

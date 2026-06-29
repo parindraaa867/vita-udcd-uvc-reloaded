@@ -130,6 +130,7 @@ static int cfg_default_fps	= 60;	/* default frame rate advertised to the host   
 static int cfg_screen_toggle	= 1;	/* allow SELECT+UP to toggle the screen manually*/
 static int cfg_low_latency	= 0;	/* serialize convert/send for lowest latency    */
 static int cfg_idle_screen_off	= 0;	/* blank screen after N min idle (0 = off)       */
+static int cfg_compat		= 0;	/* compatibility mode: single framebuffer        */
 
 /* dwFrameInterval (100ns units) for a given fps. */
 #define FPS_INTERVAL(fps)	(10000000u / (fps))
@@ -181,6 +182,12 @@ static volatile SceUID uvc_frame_buffer_uid[UVC_FRAMEBUFFER_COUNT];
 static struct uvc_frame *uvc_frame_buffer_addr[UVC_FRAMEBUFFER_COUNT];
 static uintptr_t uvc_frame_buffer_paddr[UVC_FRAMEBUFFER_COUNT];
 SceUID uvc_frame_req_evflag;
+
+/* Saved alloc params so a single slot can be (de)allocated live for compat mode. */
+static SceKernelMemBlockType fb_type;
+static unsigned int fb_size;
+static SceKernelAllocMemBlockKernelOpt *fb_optp;
+static volatile int g_single_buf;	/* compatibility mode: hold only 1 framebuffer */
 
 /* ---------------------------------------------------------------------------
  * Display power (universal OLED/LCD), driven from the housekeeping thread.
@@ -291,6 +298,8 @@ static void apply_config_kv(const char *key, const char *val)
 		cfg_low_latency = parse_uint(val) ? 1 : 0;
 	else if (!strcmp(key, "idle_screen_off"))
 		cfg_idle_screen_off = (int)parse_uint(val);
+	else if (!strcmp(key, "compat_mode"))
+		cfg_compat = parse_uint(val) ? 1 : 0;
 	else if (!strcmp(key, "fps")) {
 		unsigned int f = parse_uint(val);
 		if (f)
@@ -795,6 +804,9 @@ static unsigned int uvc_frame_transfer(struct uvc_frame *frame,
 }
 
 int uvc_start(void);
+static void frame_set_single(int single);
+static int uvc_frame_init(void);
+static int uvc_frame_term(void);
 int uvc_stop(void);
 
 static inline unsigned int display_to_iftu_pixelformat(unsigned int fmt)
@@ -914,10 +926,14 @@ static int convert_frame(void)
 
 		NextTransferState now_xfer = next_xfer;
 		now_xfer.frame_size = VIDEO_FRAME_SIZE_NV12(dst_width, dst_height);
-		now_xfer.fb_idx = (now_xfer.fb_idx + 1) & (UVC_FRAMEBUFFER_COUNT - 1);
+		now_xfer.fb_idx = g_single_buf ? 0 :
+			((now_xfer.fb_idx + 1) & (UVC_FRAMEBUFFER_COUNT - 1));
 
-		if (uvc_frame_buffer_uid[now_xfer.fb_idx] < 0)
-			return -1;
+		/* Lazily allocate the framebuffer(s) on the first frame. */
+		if (uvc_frame_buffer_uid[now_xfer.fb_idx] < 0) {
+			if (uvc_frame_init() < 0)
+				return -1;
+		}
 
 		ret = frame_convert_to_nv12(now_xfer.fb_idx, &fb_info, dst_width, dst_height);
 		if (ret < 0) {
@@ -1080,6 +1096,8 @@ static int uvc_housekeeping_thread(SceSize args, void *argp)
 				ksceIoRemove("ux0:/data/udcd_uvc_reload");
 				read_config();
 			}
+			/* Apply compat-mode buffer count live (safe only while idle). */
+			frame_set_single(cfg_compat);
 			last_cfg_check = now;
 		}
 
@@ -1171,13 +1189,17 @@ static int uvc_convert_thread(SceSize args, void *argp)
 			 * grabbing the next frame (1 in flight). Trades the convert/
 			 * send overlap for the freshest possible frame each cycle.
 			 */
-			if (cfg_low_latency) {
+			if (cfg_low_latency || g_single_buf) {
 				unsigned int ob;
 				ksceKernelWaitEventFlagCB(eventflag_sent, 1,
 					SCE_EVENT_WAITOR | SCE_EVENT_WAITCLEAR_PAT,
 					&ob, (SceUInt32[]){200000});
 			}
 #endif
+		} else if (!stream) {
+			/* Idle (~1s with no frame requested): free the framebuffers
+			 * so the plugin holds no large RAM while you're just gaming. */
+			uvc_frame_term();
 		}
 	}
 
@@ -1231,53 +1253,95 @@ static int uvc_frame_term(void)
 	return 0;
 }
 
-static int uvc_frame_init(void)
+static int frame_alloc_slot(int i)
 {
 	int ret;
-	unsigned int size;
-	SceKernelMemBlockType type;
-	SceKernelAllocMemBlockKernelOpt *optp;
+
+	if (uvc_frame_buffer_uid[i] >= 0)
+		return 0;
+
+	uvc_frame_buffer_uid[i] = ksceKernelAllocMemBlock("uvc_frame_buffer", fb_type, fb_size, fb_optp);
+	if (uvc_frame_buffer_uid[i] < 0) {
+		LOG("Error allocating CSC%d dest memory: 0x%08X\n", i, uvc_frame_buffer_uid[i]);
+		return uvc_frame_buffer_uid[i];
+	}
+	ret = ksceKernelGetMemBlockBase(uvc_frame_buffer_uid[i], (void **)&uvc_frame_buffer_addr[i]);
+	if (ret >= 0)
+		ret = ksceKernelGetPaddr(uvc_frame_buffer_addr[i]->data, &uvc_frame_buffer_paddr[i]);
+	if (ret < 0) {
+		ksceKernelFreeMemBlock(uvc_frame_buffer_uid[i]);
+		uvc_frame_buffer_uid[i] = -1;
+	}
+	return ret;
+}
+
+static void frame_free_slot(int i)
+{
+	if (uvc_frame_buffer_uid[i] >= 0) {
+		ksceKernelFreeMemBlock(uvc_frame_buffer_uid[i]);
+		uvc_frame_buffer_uid[i] = -1;
+		uvc_frame_buffer_paddr[i] = 0;
+	}
+}
+
+/* Switch between 1 and 2 held framebuffers live. Only safe while not streaming. */
+static void frame_set_single(int single)
+{
+	if (single == g_single_buf)
+		return;
+	if (streaming_active)
+		return;	/* defer until the next idle check */
+
+	if (single) {
+		for (int i = 1; i < UVC_FRAMEBUFFER_COUNT; i++)
+			frame_free_slot(i);
+		g_single_buf = 1;
+	} else {
+		for (int i = 1; i < UVC_FRAMEBUFFER_COUNT; i++)
+			if (frame_alloc_slot(i) < 0)
+				return;
+		g_single_buf = 0;
+	}
+}
+
+static int uvc_frame_init(void)
+{
+	int n;
 
 	/* Ensure we're not leaking a previous allocation. */
 	uvc_frame_term();
 
 #ifdef USE_CDRAM
-	type = SCE_KERNEL_MEMBLOCK_TYPE_KERNEL_CDRAM_RW;
-	size = ALIGN(UVC_FRAME_PADDING_SIZE + MAX_UVC_PAYLOAD_TRANSFER_SIZE, 256 * 1024);
-	optp = NULL;
+	fb_type = SCE_KERNEL_MEMBLOCK_TYPE_KERNEL_CDRAM_RW;
+	fb_size = ALIGN(UVC_FRAME_PADDING_SIZE + MAX_UVC_PAYLOAD_TRANSFER_SIZE, 256 * 1024);
 #else
 	/*
-	 * Allocate from the kernel-root physically-contiguous, non-cacheable
-	 * partition. It's a much larger pool than the user partition, and being
-	 * non-cacheable means we never have to flush the data cache before the
-	 * IFTU/USB DMA reads from it.
+	 * Kernel-root physically-contiguous, non-cacheable partition (large pool,
+	 * no cache flush needed before the IFTU/USB DMA reads from it).
 	 */
-	type = SCE_KERNEL_MEMBLOCK_TYPE_KERNEL_ROOT_PHYCONT_NC_RW;
-	size = ALIGN(UVC_FRAME_PADDING_SIZE + MAX_UVC_PAYLOAD_TRANSFER_SIZE, 4 * 1024);
-	optp = NULL;
+	fb_type = SCE_KERNEL_MEMBLOCK_TYPE_KERNEL_ROOT_PHYCONT_NC_RW;
+	fb_size = ALIGN(UVC_FRAME_PADDING_SIZE + MAX_UVC_PAYLOAD_TRANSFER_SIZE, 4 * 1024);
 #endif
+	fb_optp = NULL;
 
-	for (int i = 0; i < UVC_FRAMEBUFFER_COUNT; i++) {
-		uvc_frame_buffer_uid[i] = ksceKernelAllocMemBlock("uvc_frame_buffer", type, size, optp);
-		if (uvc_frame_buffer_uid[i] < 0) {
-			LOG("Error allocating CSC%d dest memory: 0x%08X\n", i, uvc_frame_buffer_uid[i]);
-			return uvc_frame_buffer_uid[i];
-		}
+	/* Compatibility mode holds a single framebuffer (less phycont memory). */
+	g_single_buf = cfg_compat ? 1 : 0;
+	n = g_single_buf ? 1 : UVC_FRAMEBUFFER_COUNT;
 
-		ret = ksceKernelGetMemBlockBase(uvc_frame_buffer_uid[i], (void **)&uvc_frame_buffer_addr[i]);
-		if (ret < 0) {
-			LOG("Error getting CSC%d dest memory addr: 0x%08X\n", i, ret);
-			ksceKernelFreeMemBlock(uvc_frame_buffer_uid[i]);
-			uvc_frame_buffer_uid[i] = -1;
-			return ret;
-		}
+	/* Slot 0 is mandatory. */
+	if (frame_alloc_slot(0) < 0)
+		return uvc_frame_buffer_uid[0];
 
-		ret = ksceKernelGetPaddr(uvc_frame_buffer_addr[i]->data, &uvc_frame_buffer_paddr[i]);
-		if (ret < 0) {
-			LOG("Error getting CSC%d dest paddr: 0x%08X\n", i, ret);
-			ksceKernelFreeMemBlock(uvc_frame_buffer_uid[i]);
-			uvc_frame_buffer_uid[i] = -1;
-			return ret;
+	/*
+	 * Smart fallback: try the extra (double-buffer) slots, but if memory is
+	 * too tight - e.g. a RAM-heavy game like Minecraft - drop to a single
+	 * buffer automatically instead of failing. Adapts per game with no
+	 * config needed.
+	 */
+	for (int i = 1; i < n; i++) {
+		if (frame_alloc_slot(i) < 0) {
+			g_single_buf = 1;
+			break;
 		}
 	}
 
@@ -1345,15 +1409,11 @@ int uvc_start(void)
 	}
 
 	/*
-	 * Allocate the (max-sized) frame buffer(s) once, up front, while memory
-	 * is still uncluttered. Kept for the whole lifetime of the plugin.
+	 * Framebuffers are allocated lazily (only while a host is actually
+	 * streaming) and freed when idle, so the plugin holds no large
+	 * physically-contiguous RAM when you're just playing a game. This is
+	 * what the original plugin did and keeps memory-heavy titles stable.
 	 */
-	ret = uvc_frame_init();
-	if (ret < 0) {
-		LOG("Error allocating the UVC frame buffer (0x%08X)\n", ret);
-		goto err_alloc_uvc_frame;
-	}
-
 	ret = uvc_frame_req_init();
 	if (ret < 0) {
 		LOG("Error allocating USB request (0x%08X)\n", ret);
@@ -1370,7 +1430,6 @@ int uvc_start(void)
 
 err_alloc_uvc_frame_req:
 	uvc_frame_term();
-err_alloc_uvc_frame:
 	ksceUdcdDeactivate();
 err_activate:
 	ksceUdcdStop(UVC_DRIVER_NAME, 0, NULL);
