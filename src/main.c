@@ -1328,10 +1328,21 @@ static int uvc_frame_init(void)
 	g_single_buf = cfg_compat ? 1 : 0;
 	n = g_single_buf ? 1 : UVC_FRAMEBUFFER_COUNT;
 
-	for (int i = 0; i < n; i++) {
-		int ret = frame_alloc_slot(i);
-		if (ret < 0)
-			return ret;
+	/* Slot 0 is mandatory. */
+	if (frame_alloc_slot(0) < 0)
+		return uvc_frame_buffer_uid[0];
+
+	/*
+	 * Smart fallback: try the extra (double-buffer) slots, but if memory is
+	 * too tight - e.g. a RAM-heavy game like Minecraft - drop to a single
+	 * buffer automatically instead of failing. Adapts per game with no
+	 * config needed.
+	 */
+	for (int i = 1; i < n; i++) {
+		if (frame_alloc_slot(i) < 0) {
+			g_single_buf = 1;
+			break;
+		}
 	}
 
 	return 0;
