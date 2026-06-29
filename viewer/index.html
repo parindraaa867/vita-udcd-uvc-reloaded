@@ -193,8 +193,16 @@ async function start(id){
   try{
     const [rw,rh]=$('#resSel').value.split('x').map(Number);
     const fps=Number($('#fpsSel').value);
-    stream=await navigator.mediaDevices.getUserMedia({audio:false,
-      video:{deviceId:id?{exact:id}:undefined,width:{ideal:rw},height:{ideal:rh},frameRate:{ideal:fps}}});
+    const base={deviceId:id?{exact:id}:undefined,width:{ideal:rw},height:{ideal:rh}};
+    // Force the chosen mode (min:) so the browser stops defaulting to 30;
+    // fall back to a soft hint if the device can't satisfy it.
+    try{
+      stream=await navigator.mediaDevices.getUserMedia(
+        {audio:false,video:Object.assign({},base,{frameRate:{min:fps-1,ideal:fps}})});
+    }catch(_){
+      stream=await navigator.mediaDevices.getUserMedia(
+        {audio:false,video:Object.assign({},base,{frameRate:{ideal:fps}})});
+    }
     v.srcObject=stream; await v.play();
     setOverlay(false); await listDevices();
     const s=stream.getVideoTracks()[0].getSettings();
