@@ -7,3 +7,5 @@ companion/*.vpk
 companion/eboot.bin
 companion/param.sfo
 builds/
+viewer/watcher/obj/
+viewer/watcher/bin/
