@@ -4,6 +4,7 @@ using System.IO;
 using System.Management;
 using System.Windows.Forms;
 using System.Drawing;
+using System.Reflection;
 using Microsoft.Win32;
 
 // Background tray app: watches for the PS Vita UVC device and instantly opens
@@ -19,8 +20,23 @@ namespace VitaViewer
         ManagementEventWatcher watcher;
         Timer poll;
 
-        string ViewerHtml() { return Path.Combine(Application.StartupPath, "index.html"); }
         string UserData() { return Path.Combine(Path.GetTempPath(), "vitaviewer"); }
+
+        // The viewer HTML is embedded in this exe; extract it once to temp.
+        string ViewerHtml()
+        {
+            string dir = UserData();
+            string path = Path.Combine(dir, "viewer.html");
+            try
+            {
+                Directory.CreateDirectory(dir);
+                using (var s = Assembly.GetExecutingAssembly().GetManifestResourceStream("index.html"))
+                using (var f = File.Create(path))
+                    s.CopyTo(f);
+            }
+            catch { }
+            return path;
+        }
 
         public App()
         {
