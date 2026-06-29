@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>udcd-uvc viewer</title>
+<style>
+  :root{
+    --bg:#0a0b12; --panel:rgba(20,24,36,.72); --accent:#00d6b4;
+    --text:#ecf0f5; --dim:#8a92a5; --radius:14px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%;background:var(--bg);color:var(--text);
+    font:14px/1.4 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+    overflow:hidden;-webkit-user-select:none;user-select:none}
+  #stage{position:fixed;inset:0;display:grid;place-items:center;background:#000}
+  video{width:100%;height:100%;object-fit:contain;background:#000;display:block}
+
+  /* fluent auto-hiding chrome */
+  #bar{position:fixed;top:0;left:0;right:0;z-index:10;
+    display:flex;align-items:center;gap:14px;padding:12px 16px;
+    background:linear-gradient(#000a,transparent);
+    transition:opacity .35s ease, transform .35s ease;}
+  .hide #bar{opacity:0;transform:translateY(-12px);pointer-events:none}
+  .brand{font-weight:600;letter-spacing:.3px}
+  .brand b{color:var(--accent)}
+  .spacer{flex:1}
+  .pill{display:flex;align-items:center;gap:8px;background:var(--panel);
+    backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
+    border:1px solid #ffffff14;border-radius:999px;padding:7px 12px;
+    transition:border-color .2s, background .2s}
+  .pill:hover{border-color:var(--accent)}
+  select,button{font:inherit;color:var(--text);background:transparent;border:0;
+    outline:none;cursor:pointer}
+  select{max-width:230px}
+  select option{background:#10131c}
+  .stat{color:var(--dim);font-variant-numeric:tabular-nums}
+  .stat b{color:var(--accent);font-weight:600}
+  .btn{width:34px;height:34px;display:grid;place-items:center;border-radius:50%;
+    background:var(--panel);border:1px solid #ffffff14;transition:.2s}
+  .btn:hover{border-color:var(--accent);color:var(--accent)}
+
+  /* centered overlay (idle / errors) */
+  #overlay{position:fixed;inset:0;z-index:5;display:grid;place-items:center;
+    text-align:center;transition:opacity .4s;pointer-events:none}
+  #overlay.gone{opacity:0}
+  .card{pointer-events:auto;background:var(--panel);backdrop-filter:blur(16px);
+    -webkit-backdrop-filter:blur(16px);border:1px solid #ffffff14;
+    border-radius:var(--radius);padding:30px 34px;max-width:420px}
+  .card h1{font-size:20px;margin-bottom:8px}
+  .card p{color:var(--dim);margin-bottom:18px}
+  .cta{background:var(--accent);color:#04110e;font-weight:700;border-radius:10px;
+    padding:11px 22px;transition:transform .12s, filter .2s}
+  .cta:hover{filter:brightness(1.08)} .cta:active{transform:scale(.97)}
+  .lens{width:60px;height:60px;margin:0 auto 16px;border-radius:50%;
+    border:4px solid var(--accent);position:relative;opacity:.9}
+  .lens::after{content:"";position:absolute;inset:14px;border-radius:50%;
+    background:var(--accent)}
+  .fade{animation:fade .5s ease}
+  @keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1}}
+</style>
+</head>
+<body class="hide">
+  <div id="stage"><video id="v" autoplay muted playsinline></video></div>
+
+  <div id="bar">
+    <span class="brand">udcd-<b>uvc</b></span>
+    <div class="pill"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>
+      <select id="dev"></select></div>
+    <div class="spacer"></div>
+    <div class="pill stat"><b id="fps">--</b>&nbsp;fps</div>
+    <div class="pill stat" id="res">--</div>
+    <button class="btn" id="full" title="Fullscreen (F)">⤢</button>
+  </div>
+
+  <div id="overlay"><div class="card fade">
+    <div class="lens"></div>
+    <h1 id="oTitle">Connect your PS Vita</h1>
+    <p id="oMsg">Plug the Vita in (udcd_uvc running) and grant camera access.</p>
+    <button class="cta" id="start">Start viewer</button>
+  </div></div>
+
+<script>
+const $=s=>document.querySelector(s);
+const v=$('#v'), devSel=$('#dev'), overlay=$('#overlay');
+let stream=null, hideTimer=null, frames=0, lastT=performance.now();
+
+function setOverlay(show,title,msg){
+  overlay.classList.toggle('gone',!show);
+  if(title)$('#oTitle').textContent=title;
+  if(msg)$('#oMsg').textContent=msg;
+}
+
+async function listDevices(){
+  const all=await navigator.mediaDevices.enumerateDevices();
+  const cams=all.filter(d=>d.kind==='videoinput');
+  devSel.innerHTML='';
+  cams.forEach(c=>{
+    const o=document.createElement('option');
+    o.value=c.deviceId; o.textContent=c.label||('Camera '+(devSel.length+1));
+    devSel.appendChild(o);
+  });
+  // auto-pick the Vita
+  const vita=cams.find(c=>/vita|uvc|udcd|psvita/i.test(c.label));
+  if(vita)devSel.value=vita.deviceId;
+  return cams.length>0;
+}
+
+async function start(id){
+  if(stream)stream.getTracks().forEach(t=>t.stop());
+  try{
+    stream=await navigator.mediaDevices.getUserMedia({
+      audio:false,
+      video:{ deviceId:id?{exact:id}:undefined,
+        width:{ideal:960}, height:{ideal:544}, frameRate:{ideal:60} }
+    });
+    v.srcObject=stream;
+    await v.play();
+    setOverlay(false);
+    await listDevices();                 // labels appear after permission
+    const s=stream.getVideoTracks()[0].getSettings();
+    $('#res').textContent=`${s.width}x${s.height}`;
+    measure();
+  }catch(e){
+    setOverlay(true,'No signal',
+      e.name==='NotAllowedError'?'Camera access was blocked — allow it and retry.'
+      :'Couldn\'t open the device. Is the Vita plugged in and udcd_uvc running?');
+  }
+}
+
+// FPS via per-frame callback (precise, no polling)
+function measure(){
+  if(!('requestVideoFrameCallback' in HTMLVideoElement.prototype)){
+    setInterval(()=>{$('#fps').textContent='~';},1000); return;
+  }
+  const tick=()=>{ frames++;
+    const now=performance.now();
+    if(now-lastT>=500){ $('#fps').textContent=Math.round(frames*1000/(now-lastT));
+      frames=0; lastT=now; }
+    v.requestVideoFrameCallback(tick);
+  };
+  v.requestVideoFrameCallback(tick);
+}
+
+// auto-hide chrome
+function poke(){ document.body.classList.remove('hide');
+  clearTimeout(hideTimer);
+  hideTimer=setTimeout(()=>document.body.classList.add('hide'),2200); }
+['mousemove','touchstart','keydown'].forEach(e=>addEventListener(e,poke));
+
+// controls
+$('#start').onclick=()=>start(devSel.value);
+devSel.onchange=()=>start(devSel.value);
+$('#full').onclick=toggleFull;
+v.onclick=toggleFull;
+function toggleFull(){ if(document.fullscreenElement)document.exitFullscreen();
+  else document.documentElement.requestFullscreen(); }
+addEventListener('keydown',e=>{ if(e.key==='f'||e.key==='F')toggleFull(); });
+v.addEventListener('emptied',()=>setOverlay(true,'Signal lost','The Vita disconnected — reconnect and press Start.'));
+
+// try to start immediately (will need a click if permission isn't granted yet)
+navigator.mediaDevices?.getUserMedia({video:true,audio:false})
+  .then(s=>{ s.getTracks().forEach(t=>t.stop()); listDevices().then(()=>start(devSel.value)); })
+  .catch(()=>setOverlay(true));
+poke();
+</script>
+</body>
+</html>
