@@ -217,6 +217,20 @@ addEventListener('resize',()=>{ if(gl)resize(); });
 $('#start').onclick=()=>start(devSel.value);
 devSel.onchange=()=>start(devSel.value);
 $('#resSel').onchange=$('#fpsSel').onchange=()=>start(devSel.value);
+
+// Re-scan when devices change (the Vita often registers a moment after the
+// page loads), and auto-switch to it the instant it appears.
+async function onDevices(){
+  const before=devSel.value;
+  await listDevices();                       // re-picks the Vita if present
+  const cur=stream?stream.getVideoTracks()[0].getSettings().deviceId:null;
+  if(devSel.value && devSel.value!==cur && devSel.value!==before) start(devSel.value);
+  else if(devSel.value && devSel.value!==cur && !stream) start(devSel.value);
+}
+navigator.mediaDevices.addEventListener('devicechange',onDevices);
+// fallback poll (some systems miss devicechange) until we're on a Vita
+setInterval(()=>{ const t=(devSel.options[devSel.selectedIndex]||{}).text||'';
+  if(!/vita|uvc|udcd/i.test(t)) onDevices(); }, 2500);
 function toggleFull(){ if(document.fullscreenElement)document.exitFullscreen();
   else document.documentElement.requestFullscreen(); }
 $('#full').onclick=toggleFull;
