@@ -120,11 +120,20 @@ const FS=`precision mediump float;varying vec2 vUV;uniform sampler2D t;
       vec2 co=(b+vec2(float(i),float(j))+0.5)/texSize;
       float w=cr(float(i)-f.x)*cr(float(j)-f.y);
       col+=texture2D(t,co)*w;tot+=w;}}return col/tot;}
-  void main(){vec4 col=bicubic(vUV);
+  void main(){
+    vec3 col=bicubic(vUV).rgb;          // edge-preserving upscale
     vec2 e=1.0/texSize;
-    vec4 blur=(texture2D(t,vUV+vec2(-e.x,0.))+texture2D(t,vUV+vec2(e.x,0.))
-      +texture2D(t,vUV+vec2(0.,-e.y))+texture2D(t,vUV+vec2(0.,e.y))+col*4.)/8.;
-    gl_FragColor=clamp(col+(col-blur)*amount,0.,1.);}`;
+    vec3 c=texture2D(t,vUV).rgb;
+    vec3 u=texture2D(t,vUV-vec2(0.,e.y)).rgb;
+    vec3 d=texture2D(t,vUV+vec2(0.,e.y)).rgb;
+    vec3 l=texture2D(t,vUV-vec2(e.x,0.)).rgb;
+    vec3 r=texture2D(t,vUV+vec2(e.x,0.)).rgb;
+    vec3 mn=min(c,min(min(u,d),min(l,r)));
+    vec3 mx=max(c,max(max(u,d),max(l,r)));
+    vec3 sharp=c*4.0-(u+d+l+r);         // high-pass detail
+    vec3 res=col+sharp*amount*0.5;
+    gl_FragColor=vec4(clamp(res,mn,mx),1.0); // CAS clamp = no ringing
+  }`;
 
 function sh(type,src){const s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);return s;}
 function initGL(){
@@ -146,7 +155,7 @@ function initGL(){
   loc.sc=gl.getUniformLocation(prog,'sc');
   loc.texSize=gl.getUniformLocation(prog,'texSize');
   loc.amount=gl.getUniformLocation(prog,'amount');
-  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,true);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,false);
   gl.clearColor(0,0,0,1);
 }
 function resize(){ const dpr=Math.min(2,window.devicePixelRatio||1);
