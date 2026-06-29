@@ -15,8 +15,8 @@ namespace VitaViewer
     class App : ApplicationContext
     {
         NotifyIcon tray;
-        Process viewer;
         bool present = false;
+        DateTime lastLaunch = DateTime.MinValue;
         ManagementEventWatcher watcher;
         Timer poll;
 
@@ -90,33 +90,55 @@ namespace VitaViewer
             tray.Text = present ? "Vita UVC Viewer - connected" : "Vita UVC Viewer - watching for Vita";
         }
 
+        // Find Edge windows we launched (tagged by our unique user-data-dir).
+        bool ViewerRunning()
+        {
+            try
+            {
+                using (var q = new ManagementObjectSearcher(
+                    "SELECT ProcessId FROM Win32_Process WHERE Name='msedge.exe' " +
+                    "AND CommandLine LIKE '%vitaviewer%'"))
+                    foreach (var o in q.Get()) return true;
+            }
+            catch { }
+            return false;
+        }
+
         void Launch()
         {
-            if (viewer != null && !viewer.HasExited) return;
+            if ((DateTime.Now - lastLaunch).TotalSeconds < 3) return; // debounce
+            if (ViewerRunning()) return;                              // never duplicate
             string edge = EdgePath();
             if (edge == null || !File.Exists(ViewerHtml())) return;
+            lastLaunch = DateTime.Now;
             var psi = new ProcessStartInfo { FileName = edge, UseShellExecute = false };
             psi.Arguments =
                 "--app=\"file:///" + ViewerHtml().Replace('\\', '/') + "\" " +
-                "--user-data-dir=\"" + UserData() + "\" --no-first-run " +
-                "--disable-features=Translate --window-size=1280,720";
-            try { viewer = Process.Start(psi); } catch { }
+                "--user-data-dir=\"" + UserData() + "\" " +
+                "--use-fake-ui-for-media-stream " +   // auto-grant camera, no prompt
+                "--no-first-run --disable-features=Translate --window-size=1280,720";
+            try { Process.Start(psi); } catch { }
         }
 
         void CloseViewer()
         {
             try
             {
-                if (viewer != null && !viewer.HasExited)
-                {
-                    // Kill the whole Edge instance (app-mode spawns children).
-                    var k = new ProcessStartInfo("taskkill", "/PID " + viewer.Id + " /T /F")
-                    { CreateNoWindow = true, UseShellExecute = false };
-                    Process.Start(k).WaitForExit(2000);
-                }
+                using (var q = new ManagementObjectSearcher(
+                    "SELECT ProcessId FROM Win32_Process WHERE Name='msedge.exe' " +
+                    "AND CommandLine LIKE '%vitaviewer%'"))
+                    foreach (ManagementObject o in q.Get())
+                    {
+                        try
+                        {
+                            int pid = Convert.ToInt32(o["ProcessId"]);
+                            Process.Start(new ProcessStartInfo("taskkill", "/PID " + pid + " /T /F")
+                            { CreateNoWindow = true, UseShellExecute = false });
+                        }
+                        catch { }
+                    }
             }
             catch { }
-            viewer = null;
         }
 
         void Shutdown()
