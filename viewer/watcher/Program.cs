@@ -116,6 +116,7 @@ namespace VitaViewer
                 "--app=\"file:///" + ViewerHtml().Replace('\\', '/') + "\" " +
                 "--user-data-dir=\"" + UserData() + "\" " +
                 "--use-fake-ui-for-media-stream " +   // auto-grant camera, no prompt
+                "--test-type " +                      // hide the "unsupported flag" warning bar
                 "--no-first-run --disable-features=Translate --window-size=1280,720";
             try { Process.Start(psi); } catch { }
         }
