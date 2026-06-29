@@ -805,6 +805,8 @@ static unsigned int uvc_frame_transfer(struct uvc_frame *frame,
 
 int uvc_start(void);
 static void frame_set_single(int single);
+static int uvc_frame_init(void);
+static int uvc_frame_term(void);
 int uvc_stop(void);
 
 static inline unsigned int display_to_iftu_pixelformat(unsigned int fmt)
@@ -927,8 +929,11 @@ static int convert_frame(void)
 		now_xfer.fb_idx = g_single_buf ? 0 :
 			((now_xfer.fb_idx + 1) & (UVC_FRAMEBUFFER_COUNT - 1));
 
-		if (uvc_frame_buffer_uid[now_xfer.fb_idx] < 0)
-			return -1;
+		/* Lazily allocate the framebuffer(s) on the first frame. */
+		if (uvc_frame_buffer_uid[now_xfer.fb_idx] < 0) {
+			if (uvc_frame_init() < 0)
+				return -1;
+		}
 
 		ret = frame_convert_to_nv12(now_xfer.fb_idx, &fb_info, dst_width, dst_height);
 		if (ret < 0) {
@@ -1191,6 +1196,10 @@ static int uvc_convert_thread(SceSize args, void *argp)
 					&ob, (SceUInt32[]){200000});
 			}
 #endif
+		} else if (!stream) {
+			/* Idle (~1s with no frame requested): free the framebuffers
+			 * so the plugin holds no large RAM while you're just gaming. */
+			uvc_frame_term();
 		}
 	}
 
@@ -1389,15 +1398,11 @@ int uvc_start(void)
 	}
 
 	/*
-	 * Allocate the (max-sized) frame buffer(s) once, up front, while memory
-	 * is still uncluttered. Kept for the whole lifetime of the plugin.
+	 * Framebuffers are allocated lazily (only while a host is actually
+	 * streaming) and freed when idle, so the plugin holds no large
+	 * physically-contiguous RAM when you're just playing a game. This is
+	 * what the original plugin did and keeps memory-heavy titles stable.
 	 */
-	ret = uvc_frame_init();
-	if (ret < 0) {
-		LOG("Error allocating the UVC frame buffer (0x%08X)\n", ret);
-		goto err_alloc_uvc_frame;
-	}
-
 	ret = uvc_frame_req_init();
 	if (ret < 0) {
 		LOG("Error allocating USB request (0x%08X)\n", ret);
@@ -1414,7 +1419,6 @@ int uvc_start(void)
 
 err_alloc_uvc_frame_req:
 	uvc_frame_term();
-err_alloc_uvc_frame:
 	ksceUdcdDeactivate();
 err_activate:
 	ksceUdcdStop(UVC_DRIVER_NAME, 0, NULL);
